@@ -1,63 +1,203 @@
-// The main script for the extension
-// The following are examples of some basic extension functionality
+// Fullscreen image viewer for images inside .mes_text
+(() => {
+	const MARGIN_VH = 10; // 10% margin top and bottom
 
-//You'll likely need to import extension_settings, getContext, and loadExtensionSettings from extensions.js
-import { extension_settings, getContext, loadExtensionSettings } from "../../../extensions.js";
+	// Create overlay element
+	const overlay = document.createElement('div');
+	overlay.className = 'fullscreen-image-overlay';
+	overlay.style.display = 'none';
+	overlay.setAttribute('role', 'dialog');
+	overlay.setAttribute('aria-hidden', 'true');
 
-//You'll likely need to import some other functions from the main script
-import { saveSettingsDebounced } from "../../../../script.js";
+	// Inner container to allow transforms separate from overlay
+	const imgContainer = document.createElement('div');
+	imgContainer.className = 'fullscreen-img-container';
+	imgContainer.style.cursor = 'grab';
+	imgContainer.style.touchAction = 'none';
+	imgContainer.style.userSelect = 'none';
 
-// Keep track of where your extension is located, name should match repo name
-const extensionName = "st-extension-example";
-const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
-const extensionSettings = extension_settings[extensionName];
-const defaultSettings = {};
+	// Image element that will be reused for any clicked image
+	const fsImg = document.createElement('img');
+	fsImg.className = 'fullscreen-img';
+	fsImg.alt = '';
 
+	imgContainer.appendChild(fsImg);
+	overlay.appendChild(imgContainer);
+	document.body.appendChild(overlay);
 
- 
-// Loads the extension settings if they exist, otherwise initializes them to the defaults.
-async function loadSettings() {
-  //Create the settings if they don't exist
-  extension_settings[extensionName] = extension_settings[extensionName] || {};
-  if (Object.keys(extension_settings[extensionName]).length === 0) {
-    Object.assign(extension_settings[extensionName], defaultSettings);
-  }
+	// State
+	let scale = 1;
+	let minScale = 0.2;
+	let maxScale = 5;
+	let originX = 0; // for transform-origin
+	let originY = 0;
+	let translateX = 0;
+	let translateY = 0;
+	let isDragging = false;
+	let dragStart = { x: 0, y: 0 };
+	let translateStart = { x: 0, y: 0 };
 
-  // Updating settings in the UI
-  $("#example_setting").prop("checked", extension_settings[extensionName].example_setting).trigger("input");
-}
+	function resetState() {
+		scale = 1;
+		translateX = 0;
+		translateY = 0;
+		originX = 50;
+		originY = 50;
+		fsImg.style.transform = '';
+		imgContainer.style.transform = '';
+		imgContainer.style.left = '';
+		imgContainer.style.top = '';
+	}
 
-// This function is called when the extension settings are changed in the UI
-function onExampleInput(event) {
-  const value = Boolean($(event.target).prop("checked"));
-  extension_settings[extensionName].example_setting = value;
-  saveSettingsDebounced();
-}
+	function showOverlay(img) {
+		fsImg.src = img.src;
+		fsImg.alt = img.alt || '';
+		overlay.style.display = 'flex';
+		overlay.setAttribute('aria-hidden', 'false');
+		document.body.classList.add('fullscreen-image-open');
+		// small fade-in
+		overlay.classList.remove('fade-out');
+		overlay.classList.add('fade-in');
+		resetState();
+		ensureFit();
+	}
 
-// This function is called when the button is clicked
-function onButtonClick() {
-  // You can do whatever you want here
-  // Let's make a popup appear with the checked setting
-  toastr.info(
-    `The checkbox is ${extension_settings[extensionName].example_setting ? "checked" : "not checked"}`,
-    "A popup appeared because you clicked the button!"
-  );
-}
+	function hideOverlay() {
+		overlay.classList.remove('fade-in');
+		overlay.classList.add('fade-out');
+		overlay.setAttribute('aria-hidden', 'true');
+		document.body.classList.remove('fullscreen-image-open');
+		// wait for animation then hide
+		setTimeout(() => {
+			if (overlay.classList.contains('fade-out')) overlay.style.display = 'none';
+		}, 200);
+	}
 
-// This function is called when the extension is loaded
-jQuery(async () => {
-  // This is an example of loading HTML from a file
-  const settingsHtml = await $.get(`${extensionFolderPath}/example.html`);
+	function ensureFit() {
+		// Ensure image fits within margins when scale=1
+		fsImg.style.maxHeight = (100 - 2 * MARGIN_VH) + 'vh';
+		fsImg.style.maxWidth = '100%';
+		fsImg.style.width = 'auto';
+		fsImg.style.height = 'auto';
+		// reset transforms
+		fsImg.style.transformOrigin = '50% 50%';
+		imgContainer.style.transform = `translate(0px, 0px) scale(1)`;
+	}
 
-  // Append settingsHtml to extensions_settings
-  // extension_settings and extensions_settings2 are the left and right columns of the settings menu
-  // Left should be extensions that deal with system functions and right should be visual/UI related 
-  $("#extensions_settings").append(settingsHtml);
+	// Wheel zoom handler
+	function onWheel(e) {
+		if (overlay.style.display === 'none') return;
+		e.preventDefault();
+		// Determine wheel direction
+		const delta = -e.deltaY || -e.wheelDelta || e.detail;
+		const rect = fsImg.getBoundingClientRect();
+		// cursor position relative to image
+		const cx = ((e.clientX - rect.left) / rect.width) * 100;
+		const cy = ((e.clientY - rect.top) / rect.height) * 100;
+		const zoomFactor = delta > 0 ? 1.12 : 0.88;
+		const newScale = Math.min(maxScale, Math.max(minScale, scale * zoomFactor));
+		// adjust translate so point under cursor stays in place
+		const prevScale = scale;
+		const sRatio = newScale / prevScale;
+		// compute offsets
+		const imgCenterX = rect.left + rect.width / 2;
+		const imgCenterY = rect.top + rect.height / 2;
+		// Convert cursor to offset from center
+		const offsetX = e.clientX - imgCenterX;
+		const offsetY = e.clientY - imgCenterY;
+		// Update translate to keep cursor anchored
+		translateX = (translateX - offsetX) * sRatio + offsetX;
+		translateY = (translateY - offsetY) * sRatio + offsetY;
+		scale = newScale;
+		updateTransform();
+	}
 
-  // These are examples of listening for events
-  $("#my_button").on("click", onButtonClick);
-  $("#example_setting").on("input", onExampleInput);
+	function updateTransform() {
+		imgContainer.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+	}
 
-  // Load settings when starting things up (if you have any)
-  loadSettings();
-});
+	// Mouse drag handlers
+	function onPointerDown(e) {
+		if (overlay.style.display === 'none') return;
+		if (scale <= 1) return; // only allow drag when zoomed
+		isDragging = true;
+		imgContainer.style.cursor = 'grabbing';
+		dragStart = { x: e.clientX, y: e.clientY };
+		translateStart = { x: translateX, y: translateY };
+		e.preventDefault();
+	}
+
+	function onPointerMove(e) {
+		if (!isDragging) return;
+		const dx = e.clientX - dragStart.x;
+		const dy = e.clientY - dragStart.y;
+		translateX = translateStart.x + dx;
+		translateY = translateStart.y + dy;
+		updateTransform();
+	}
+
+	function onPointerUp() {
+		if (!isDragging) return;
+		isDragging = false;
+		imgContainer.style.cursor = 'grab';
+	}
+
+	// Close on background click
+	overlay.addEventListener('click', (e) => {
+		if (e.target === overlay) {
+			hideOverlay();
+		}
+	});
+
+	// Prevent clicks on image from closing
+	imgContainer.addEventListener('click', (e) => e.stopPropagation());
+
+	// Wheel on overlay
+	overlay.addEventListener('wheel', onWheel, { passive: false });
+
+	// Pointer events for dragging
+	imgContainer.addEventListener('pointerdown', onPointerDown);
+	window.addEventListener('pointermove', onPointerMove);
+	window.addEventListener('pointerup', onPointerUp);
+
+	// Escape key to close
+	window.addEventListener('keydown', (e) => {
+		if (e.key === 'Escape') {
+			if (overlay.style.display !== 'none') hideOverlay();
+		}
+	});
+
+	// Attach click handlers to images within .mes_text
+	function attachListeners(root = document) {
+		const parents = root.querySelectorAll('.mes_text');
+		parents.forEach(parent => {
+			parent.querySelectorAll('img').forEach(img => {
+				if (img.dataset.fsBound) return;
+				img.dataset.fsBound = '1';
+				img.style.cursor = 'zoom-in';
+				img.addEventListener('click', (e) => {
+					showOverlay(e.currentTarget);
+				});
+			});
+		});
+	}
+
+	// Run on load and also observe for dynamically added messages
+	if (document.readyState === 'loading') {
+		document.addEventListener('DOMContentLoaded', () => attachListeners(document));
+	} else {
+		attachListeners(document);
+	}
+
+	// MutationObserver to attach to future nodes
+	const mo = new MutationObserver((mutations) => {
+		for (const m of mutations) {
+			if (m.addedNodes && m.addedNodes.length) {
+				attachListeners();
+				break;
+			}
+		}
+	});
+	mo.observe(document.body, { childList: true, subtree: true });
+
+})();
